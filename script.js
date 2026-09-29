@@ -154,7 +154,7 @@ const sideWord = (s) => (s === "L" ? "Левая" : "Правая");
 
 // ---------- Приседания (лицом или боком) ----------
 function createSquat() {
-    let view = "front", phase = "up", minDepth = 1, thighRef = 0;
+    let view = "front", phase = "up", minDepth = 1, thighRef = 0, maxAsym = 0;
     return {
         update(b) {
             view = trackView(view, b);
@@ -198,14 +198,17 @@ function createSquat() {
 
             // Фазы: вверху → вниз → вверх = попытка
             if (phase === "up") {
-                if (depth < 0.7) { phase = "down"; minDepth = depth; }
+                if (depth < 0.7) { phase = "down"; minDepth = depth; maxAsym = 0; }
             } else {
                 minDepth = Math.min(minDepth, depth);
+                if (!side) maxAsym = Math.max(maxAsym, Math.abs(kl - kr));
                 if (depth > 0.88) {
                     phase = "up";
+                    // Оценка повтора: глубина (100% — таз ниже коленей) минус перекос
+                    const quality = clamp((0.7 - minDepth) / 0.6) * 100 - Math.max(0, maxAsym - 10);
                     rep = minDepth <= 0.3
-                        ? { counted: true, errors: [] }
-                        : { counted: false, errors: [issue("squat_shallow", { joints: [S.idx.hip] })] };
+                        ? { counted: true, errors: [], quality }
+                        : { counted: false, errors: [issue("squat_shallow", { joints: [S.idx.hip] })], quality };
                 }
             }
 
@@ -275,7 +278,11 @@ function createJack() {
                         if (peak.legs < 1.3) errors.push(issue("jack_legs", { joints: [J.L_ANKLE, J.R_ANKLE] }));
                         if (peak.elbow < 140) errors.push(issue("jack_bent", { joints: [J.L_ELBOW, J.R_ELBOW] }));
                     }
-                    rep = { counted, errors };
+                    // Оценка повтора: амплитуда рук и ног минус асимметрия рук
+                    const armsQ = clamp((Math.min(peak.rl, peak.rr) - 0.3) / 0.6);
+                    const legsQ = clamp((peak.legs - 1.0) / 0.5);
+                    const quality = ((armsQ + legsQ) / 2) * 100 - Math.abs(peak.rl - peak.rr) * 40;
+                    rep = { counted, errors, quality };
                 }
             }
 
@@ -332,9 +339,11 @@ function createRaise() {
                 peakR = Math.max(peakR, aR);
                 if (avg < 30) {
                     phase = "down";
+                    // Оценка повтора: насколько близко к 90° (уровень плеч) и насколько симметрично
+                    const quality = 100 - Math.abs((peakL + peakR) / 2 - 90) * 1.5 - Math.abs(peakL - peakR);
                     rep = Math.min(peakL, peakR) >= 70
-                        ? { counted: true, errors: [] }
-                        : { counted: false, errors: [issue("raise_low", { joints: [J.L_WRIST, J.R_WRIST] })] };
+                        ? { counted: true, errors: [], quality }
+                        : { counted: false, errors: [issue("raise_low", { joints: [J.L_WRIST, J.R_WRIST] })], quality };
                 }
             }
 
@@ -427,6 +436,17 @@ const EXERCISES = [
         create: createPlank,
     },
 ];
+
+// Режим «Тренировка»: упражнения подряд с отдыхом и общими итогами
+const PROGRAM = {
+    id: "program", name: "Тренировка", icon: "🔥", rest: 10,
+    desc: "4 упражнения подряд с отдыхом между ними и общими итогами — около 3 минут.",
+    steps: [["squat", 8], ["jack", 12], ["raise", 8], ["plank", 20]],
+};
+
+// Шаг и границы при выборе цели кнопками «−» / «+»
+const targetStep = (def) => (def.type === "hold" ? 10 : def.target >= 15 ? 5 : 2);
+const TARGET_LIMITS = { reps: [2, 60], hold: [10, 180] };
 
 // Видно ли нужные для упражнения части тела
 function inFrame(b, need) {
@@ -527,6 +547,17 @@ function saveEntry(entry) {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(h.slice(-300))); } catch { /* приватный режим */ }
 }
 const bestScore = (exId) => loadHistory().filter((e) => e.ex === exId).reduce((m, e) => Math.max(m, e.score), 0);
+
+// Выбранные пользователем цели по упражнениям
+const TARGETS_KEY = "forma.targets.v1";
+function loadTargets() {
+    try { return JSON.parse(localStorage.getItem(TARGETS_KEY)) || {}; } catch { return {}; }
+}
+function saveTarget(exId, value) {
+    const t = loadTargets();
+    t[exId] = value;
+    try { localStorage.setItem(TARGETS_KEY, JSON.stringify(t)); } catch { /* приватный режим */ }
+}
 
 /* =====================================================================
    8. DOM и отрисовка
@@ -701,6 +732,11 @@ const app = {
     debug: false,
     fps: { frames: 0, since: 0, value: 0 },
     started: false,
+    target: 0,          // цель текущего подхода (повторы или секунды)
+    prepPauseUntil: 0,  // после нажатия «−/+» не стартуем сразу
+    program: null,      // активная «Тренировка»: { steps, index, results, start }
+    restUntil: 0,
+    lastMode: "single", // что повторять по кнопке «Ещё раз»
 };
 const cursor = new HandCursor(cursorEl);
 
@@ -719,9 +755,9 @@ async function start(src) {
     show("loading");
     $("#loading-text").textContent = src.file ? "Открываю видео…" : "Включаю камеру… Разреши доступ в браузере";
     try {
-        if (src.file) {
+        if (src.file || src.url) {
             video.srcObject = null;
-            video.src = URL.createObjectURL(src.file);
+            video.src = src.url || URL.createObjectURL(src.file);
             video.loop = true;
             app.mirror = false;
         } else {
@@ -734,10 +770,11 @@ async function start(src) {
             app.mirror = true;
         }
         video.classList.toggle("mirror", app.mirror);
-        await video.play();
+        // AbortError — браузер приостановил видео (вкладка в фоне); это не ошибка, видео продолжится
+        await video.play().catch((e) => { if (e.name !== "AbortError") throw e; });
         video.classList.add("live");
         updateFit();
-        setStatus(src.file ? "Видео из файла" : "Камера подключена");
+        setStatus(src.url ? "Демо-видео" : src.file ? "Видео из файла" : "Камера подключена");
 
         if (!app.detector) {
             $("#loading-text").textContent = "Загружаю модель распознавания позы…";
@@ -745,10 +782,21 @@ async function start(src) {
         }
         if (!app.started) { app.started = true; requestAnimationFrame(loop); }
         renderMenu();
-        show("menu");
-        say("Выбери упражнение. Наведи ладонь на карточку", "menu", true);
+        if (src.demo) {
+            // Демо: сразу приседания на записанном видео
+            openPrepare(EXERCISES.find((e) => e.id === src.demo));
+        } else {
+            show("menu");
+            say("Выбери упражнение. Наведи ладонь на карточку", "menu", true);
+        }
     } catch (err) {
         console.error(err);
+        if (src.url) {
+            $("#error-text").textContent = `Не удалось открыть демо-видео ${src.url}. Положи файл рядом с index.html.`;
+            setStatus("Ошибка");
+            show("error");
+            return;
+        }
         const msg = {
             NotAllowedError: "Доступ к камере запрещён. Разреши его в адресной строке браузера (значок камеры) и попробуй снова.",
             NotFoundError: "Камера не найдена. Подключи камеру или загрузи видео с тренировкой.",
@@ -816,6 +864,10 @@ function loop() {
             cursor.update(app.body, now);
             tickPrepare(now);
             break;
+        case "rest":
+            cursor.update(app.body, now);
+            tickRest(now);
+            break;
         case "countdown":
             cursor.hide();
             tickCountdown(now);
@@ -834,6 +886,27 @@ function loop() {
 function renderMenu() {
     const cards = $("#cards");
     cards.innerHTML = "";
+
+    // Карточка «Тренировка» — все упражнения подряд
+    const bestProgram = bestScore(PROGRAM.id);
+    const prog = document.createElement("button");
+    prog.className = "card program";
+    prog.dataset.gesture = "";
+    prog.innerHTML = `
+        <span class="icon">${PROGRAM.icon}</span>
+        <div class="program-text">
+            <h3>${PROGRAM.name}: все упражнения подряд</h3>
+            <p>${PROGRAM.desc}</p>
+            <div class="meta"><span>${PROGRAM.steps.map(([id, n]) => {
+                const d = EXERCISES.find((e) => e.id === id);
+                return `${d.icon} ${n}${d.type === "hold" ? " с" : ""}`;
+            }).join(" · ")}</span>
+            <span>${bestProgram ? `рекорд <b>${bestProgram}</b>` : "ещё не пробовал"}</span></div>
+        </div>`;
+    prog.addEventListener("click", startProgram);
+    cards.appendChild(prog);
+
+    const targets = loadTargets();
     for (const def of EXERCISES) {
         const best = bestScore(def.id);
         const btn = document.createElement("button");
@@ -843,9 +916,9 @@ function renderMenu() {
             <span class="icon">${def.icon}</span>
             <h3>${def.name}</h3>
             <p>${def.desc}</p>
-            <div class="meta"><span>${def.type === "hold" ? `${def.target} сек` : `${def.target} повторов`}</span>
+            <div class="meta"><span>${def.type === "hold" ? `${targets[def.id] || def.target} сек` : `${targets[def.id] || def.target} повторов`}</span>
             <span>${best ? `рекорд <b>${best}</b>` : "ещё не пробовал"}</span></div>`;
-        btn.addEventListener("click", () => openPrepare(def));
+        btn.addEventListener("click", () => { app.program = null; app.lastMode = "single"; openPrepare(def); });
         cards.appendChild(btn);
     }
     const h = loadHistory();
@@ -856,11 +929,15 @@ function renderMenu() {
 }
 
 // ---------- Подготовка: тело в кадре и правильный ракурс ----------
-function openPrepare(def) {
+function openPrepare(def, { target, stepLabel } = {}) {
     app.def = def;
+    app.target = target ?? (loadTargets()[def.id] || def.target);
     app.prepView = null;
     app.prepOkSince = 0;
-    $("#prep-eyebrow").textContent = def.type === "hold" ? `Цель: ${def.target} секунд с чистой техникой` : `Цель: ${def.target} повторов`;
+    app.prepPauseUntil = 0;
+    $("#prep-eyebrow").textContent = stepLabel || "✋ Выбери цель ладонью: − / +";
+    $("#target-box").hidden = !!app.program; // в «Тренировке» цели заданы программой
+    renderTarget();
     $("#prep-title").textContent = `${def.icon} ${def.name}`;
     $("#prep-setup").textContent = def.setup;
     $("#chk-view").textContent = { any: "Ракурс: лицом или боком", front: "Стоишь лицом к камере", side: "Стоишь боком к камере" }[def.view];
@@ -877,7 +954,9 @@ function tickPrepare(now) {
     const viewOk = !!b && (def.view === "any" || app.prepView === def.view);
     $("#chk-frame").classList.toggle("ok", frameOk);
     $("#chk-view").classList.toggle("ok", viewOk);
-    if (frameOk && viewOk) {
+    // Пока ладонь наведена на кнопку или только что меняли цель — не стартуем
+    const busy = !!cursor.target || now < app.prepPauseUntil;
+    if (frameOk && viewOk && !busy) {
         app.prepOkSince ||= now;
         const p = clamp((now - app.prepOkSince) / 1200);
         $("#prep-fill").style.width = `${p * 100}%`;
@@ -886,6 +965,63 @@ function tickPrepare(now) {
         app.prepOkSince = 0;
         $("#prep-fill").style.width = "0%";
     }
+}
+
+// ---------- Цель подхода: кнопки «−» / «+» ----------
+function renderTarget() {
+    const def = app.def;
+    $("#target-label").textContent = def.type === "hold" ? "Цель, секунд" : "Цель, повторов";
+    $("#target-value").textContent = app.target;
+}
+function changeTarget(dir) {
+    const def = app.def;
+    const [lo, hi] = TARGET_LIMITS[def.type];
+    app.target = clamp(app.target + dir * targetStep(def), lo, hi);
+    saveTarget(def.id, app.target);
+    app.prepPauseUntil = performance.now() + 2500;
+    app.prepOkSince = 0;
+    renderTarget();
+}
+
+// ---------- Режим «Тренировка» ----------
+function startProgram() {
+    app.lastMode = "program";
+    app.program = {
+        steps: PROGRAM.steps.map(([id, target]) => ({ def: EXERCISES.find((e) => e.id === id), target })),
+        index: 0,
+        results: [],
+        start: performance.now(),
+    };
+    say("Тренировка из четырёх упражнений. Поехали!", "program", true);
+    openProgramStep();
+}
+
+function openProgramStep() {
+    const P = app.program, st = P.steps[P.index];
+    openPrepare(st.def, { target: st.target, stepLabel: `🔥 Тренировка · шаг ${P.index + 1} из ${P.steps.length}` });
+}
+
+function showRest(result) {
+    const P = app.program;
+    P.index++;
+    const next = P.steps[P.index];
+    $("#rest-step").textContent = `🔥 Тренировка · готово ${P.index} из ${P.steps.length}`;
+    $("#rest-done").textContent = `${result.def.icon} ${result.def.name} — готово!`;
+    $("#rest-result").textContent = result.def.type === "hold"
+        ? `${Math.round(result.cleanHold)} с чистой планки · техника ${result.quality}% · ${result.score} очков`
+        : `${result.counted} из ${result.target} · техника ${result.quality}% · ${result.score} очков`;
+    $("#rest-next").textContent = `${next.def.icon} ${next.def.name} · ${next.target}${next.def.type === "hold" ? " секунд" : " повторов"}`;
+    app.restUntil = performance.now() + PROGRAM.rest * 1000;
+    $("#rest-timer").textContent = PROGRAM.rest;
+    show("rest");
+    sfx.finish();
+    say(`Отдых. Дальше: ${next.def.name}`, "rest", true);
+}
+
+function tickRest(now) {
+    const left = Math.ceil((app.restUntil - now) / 1000);
+    $("#rest-timer").textContent = Math.max(0, left);
+    if (left <= 0) openProgramStep();
 }
 
 // ---------- Отсчёт 3-2-1 ----------
@@ -915,15 +1051,15 @@ function startWorkout() {
     app.ex = def.create();
     app.monitor = new FormMonitor();
     app.session = {
-        def, start: performance.now(), lastT: 0,
-        attempts: 0, counted: 0, clean: 0,
+        def, target: app.target, start: performance.now(), lastT: 0,
+        attempts: 0, counted: 0, clean: 0, repScores: [], lastQ: null,
         repIssues: new Map(), stats: {},
         hold: 0, cleanHold: 0, everIn: false, outSince: 0,
         finishSince: 0, finishing: false,
     };
     $("#hud-type").textContent = def.type === "hold" ? "удержание" : "повторения";
     $("#hud-name").textContent = def.name;
-    $("#hud-target").textContent = def.type === "hold" ? `/${def.target} с` : `/${def.target}`;
+    $("#hud-target").textContent = def.type === "hold" ? `/${app.target} с` : `/${app.target}`;
     show("workout");
     sfx.go();
     say(def.type === "hold" ? "Время пошло! Считаю только ровную планку" : "Начали!", "go", true);
@@ -960,13 +1096,13 @@ function tickWorkout(now) {
                 const before = Math.floor(S.cleanHold);
                 S.cleanHold += dt;
                 const after = Math.floor(S.cleanHold);
-                if (after !== before && after % 10 === 0 && after < def.target) say(`${after} секунд`, "sec" + after, true);
+                if (after !== before && after % 10 === 0 && after < S.target) say(`${after} секунд`, "sec" + after, true);
             }
         } else if (S.everIn) {
             S.outSince ||= now;
             if (now - S.outSince > 4000) finish("stopped"); // встал из планки
         }
-        if (S.cleanHold >= def.target) finish("target");
+        if (S.cleanHold >= S.target) finish("target");
     }
 
     // Жест завершения: скрещённые руки над головой
@@ -999,10 +1135,16 @@ function onRep(rep, now) {
     rep.errors.forEach((e) => errs.set(e.code, e));
     errs.forEach((e) => { if (e.kind === "error") stat(e).count++; });
 
+    // Оценка повтора 0–100: амплитуда и симметрия от упражнения, минус 15 за каждую ошибку
+    const errorCount = [...errs.values()].filter((e) => e.kind === "error").length;
+    const q = Math.round(clamp((rep.quality ?? 100) - errorCount * 15, 0, 100));
+
     if (rep.counted) {
         S.counted++;
-        if (errs.size === 0) { S.clean++; app.goodUntil = now + 350; popRep("+1", "good"); }
-        else popRep("+1", "warn");
+        S.repScores.push(q);
+        S.lastQ = q;
+        if (errs.size === 0) { S.clean++; app.goodUntil = now + 350; popRep(`+1 · ${q}%`, "good"); }
+        else popRep(`+1 · ${q}%`, "warn");
         sfx.rep();
     } else {
         popRep("не засчитано", "bad");
@@ -1013,7 +1155,7 @@ function onRep(rep, now) {
         app.monitor.flash(e, 2600, now);
         say(e.say || e.title, e.code);
     }
-    if (S.counted >= S.def.target && !S.finishing) {
+    if (S.counted >= S.target && !S.finishing) {
         S.finishing = true;
         setTimeout(() => finish("target"), 500);
     }
@@ -1034,7 +1176,9 @@ function updateHud(now, res, mon) {
     $("#hud-time").textContent = fmtTime((now - S.start) / 1000);
     if (def.type === "reps") {
         $("#hud-count").textContent = S.counted;
-        $("#hud-sub").textContent = S.attempts ? `чистых: ${S.clean} из ${S.attempts}` : "начинай, я считаю";
+        $("#hud-sub").textContent = S.attempts
+            ? `${S.lastQ != null ? `последний: ${S.lastQ}% · ` : ""}чистых: ${S.clean} из ${S.attempts}`
+            : "начинай, я считаю";
     } else {
         $("#hud-count").textContent = Math.floor(S.cleanHold);
         $("#hud-sub").textContent = S.hold > 0.5 ? `в планке всего: ${Math.floor(S.hold)} с` : "прими упор — таймер стартует сам";
@@ -1067,59 +1211,137 @@ function finish(reason) {
     const S = app.session, def = S.def;
     const duration = (performance.now() - S.start) / 1000;
 
+    const avg = (arr) => (arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0);
     let score, quality;
     if (def.type === "reps") {
         score = S.counted * 10 + S.clean * 5;
-        quality = S.attempts ? S.clean / S.attempts : 0;
+        quality = avg(S.repScores); // средняя оценка засчитанных повторов
     } else {
         score = Math.round(S.cleanHold * 3 + (S.hold - S.cleanHold));
-        quality = S.hold ? S.cleanHold / S.hold : 0;
+        quality = S.hold ? (S.cleanHold / S.hold) * 100 : 0;
     }
     const empty = def.type === "reps" ? S.attempts === 0 : S.hold < 1;
     const prevBest = bestScore(def.id);
     const isRecord = !empty && score > 0 && score > prevBest;
     const entry = {
-        ts: Date.now(), ex: def.id, score, quality: Math.round(quality * 100),
+        ts: Date.now(), ex: def.id, score, quality: Math.round(quality),
         reps: S.counted, attempts: S.attempts, clean: S.clean,
         hold: Math.round(S.hold), cleanHold: Math.round(S.cleanHold), duration: Math.round(duration), reason,
     };
     if (!empty) saveEntry(entry);
 
-    // Заголовок и главная ошибка
     const errors = Object.values(S.stats).filter((s) => s.issue.kind === "error")
         .sort((a, b) => (def.type === "hold" ? b.time - a.time : b.count - a.count));
-    const q = entry.quality;
-    const headline = empty ? "Подход не начат"
-        : q >= 80 ? "Отличная техника! 💪"
-        : q >= 50 ? "Хорошо, но есть над чем поработать"
-        : "Техника требует внимания";
 
-    $("#sum-ex").textContent = `${def.icon} ${def.name} · ${fmtTime(duration)}`;
-    $("#sum-headline").textContent = headline;
-    $("#sum-score").textContent = score;
-    $("#sum-record").hidden = !isRecord;
+    const result = {
+        def, target: S.target, score, quality: entry.quality, empty, isRecord, duration, errors,
+        counted: S.counted, clean: S.clean, attempts: S.attempts, hold: S.hold, cleanHold: S.cleanHold,
+        best: S.repScores.length ? Math.max(...S.repScores) : null,
+    };
 
-    const stats = def.type === "reps"
-        ? [["Засчитано", `${S.counted}/${def.target}`], ["Чистых", S.clean], ["Попыток", S.attempts], ["Техника", `${q}%`]]
-        : [["Чистое время", `${Math.round(S.cleanHold)} с`], ["Всего в планке", `${Math.round(S.hold)} с`], ["Цель", `${def.target} с`], ["Техника", `${q}%`]];
+    if (app.program) {
+        app.program.results.push(result);
+        if (app.program.index + 1 < app.program.steps.length) showRest(result);
+        else renderProgramSummary();
+        return;
+    }
+    renderSummary(result);
+}
+
+const headlineFor = (empty, q) => (empty ? "Подход не начат"
+    : q >= 80 ? "Отличная техника! 💪"
+    : q >= 50 ? "Хорошо, но есть над чем поработать"
+    : "Техника требует внимания");
+
+function renderStats(stats) {
     $("#sum-stats").innerHTML = stats.map(([k, v]) => `<div class="stat"><small>${k}</small><b>${v}</b></div>`).join("");
+}
 
-    $("#sum-errors").innerHTML = errors.length
-        ? errors.slice(0, 4).map((s) => `
+function renderBars(items, emptyText) {
+    const max = Math.max(1, ...items.map((e) => e.score));
+    $("#sum-bars").innerHTML = items.length
+        ? items.map((e) => `<div class="${e.last ? "last" : ""}" style="height:${Math.max(4, (e.score / max) * 100)}%"><span>${e.label ?? e.score}</span></div>`).join("")
+        : `<p class="bars-empty">${emptyText}</p>`;
+}
+
+// Итоги одного упражнения
+function renderSummary(r) {
+    const { def, empty } = r, q = r.quality;
+    $("#sum-ex").textContent = `${def.icon} ${def.name} · ${fmtTime(r.duration)}`;
+    $("#sum-headline").textContent = headlineFor(empty, q);
+    $("#sum-score").textContent = r.score;
+    $("#sum-record").hidden = !r.isRecord;
+
+    renderStats(def.type === "reps"
+        ? [["Засчитано", `${r.counted}/${r.target}`], ["Чистых", `${r.clean} из ${r.attempts}`], ["Ср. оценка", `${q}%`], ["Лучший повтор", r.best != null ? `${r.best}%` : "—"]]
+        : [["Чистое время", `${Math.round(r.cleanHold)} с`], ["Всего в планке", `${Math.round(r.hold)} с`], ["Цель", `${r.target} с`], ["Техника", `${q}%`]]);
+
+    $("#sum-errors").innerHTML = r.errors.length
+        ? r.errors.slice(0, 4).map((s) => `
             <li><b>${s.issue.title}<em>${def.type === "hold" ? `${Math.round(s.time)} с` : `×${s.count}`}</em></b>
             <span>Как исправить: ${s.issue.fix}</span></li>`).join("")
         : `<li class="clean"><b>Ошибок не замечено</b><span>${empty ? "Сделай хотя бы одно движение — и я разберу технику." : "Так держать! Попробуй увеличить темп или цель."}</span></li>`;
 
+    $("#sum-bars-label").textContent = "Прогресс (последние подходы)";
     const hist = loadHistory().filter((e) => e.ex === def.id).slice(-8);
-    const max = Math.max(1, ...hist.map((e) => e.score));
-    $("#sum-bars").innerHTML = hist.length
-        ? hist.map((e, i) => `<div class="${i === hist.length - 1 && !empty ? "last" : ""}" style="height:${Math.max(4, (e.score / max) * 100)}%"><span>${e.score}</span></div>`).join("")
-        : `<p class="bars-empty">Здесь появится график после первых подходов</p>`;
+    renderBars(hist.map((e, i) => ({ score: e.score, last: i === hist.length - 1 && !empty })), "Здесь появится график после первых подходов");
 
     show("summary");
     sfx.finish();
-    const top = errors[0];
-    say(empty ? "Подход завершён" : `Готово! ${score} очков. ${isRecord ? "Новый рекорд! " : ""}${top ? "Главное замечание: " + top.issue.title : "Отличная техника!"}`, "finish", true);
+    const top = r.errors[0];
+    say(empty ? "Подход завершён" : `Готово! ${r.score} очков. ${r.isRecord ? "Новый рекорд! " : ""}${top ? "Главное замечание: " + top.issue.title : "Отличная техника!"}`, "finish", true);
+}
+
+// Общие итоги «Тренировки»
+function renderProgramSummary() {
+    const P = app.program;
+    app.program = null;
+    const rs = P.results;
+    const done = rs.filter((r) => !r.empty);
+    const total = rs.reduce((s, r) => s + r.score, 0);
+    const q = done.length ? Math.round(done.reduce((s, r) => s + r.quality, 0) / done.length) : 0;
+    const duration = (performance.now() - P.start) / 1000;
+    const empty = done.length === 0;
+    const prevBest = bestScore(PROGRAM.id);
+    const isRecord = !empty && total > 0 && total > prevBest;
+    if (!empty) {
+        saveEntry({
+            ts: Date.now(), ex: PROGRAM.id, score: total, quality: q,
+            reps: rs.reduce((s, r) => s + r.counted, 0), steps: done.length, duration: Math.round(duration),
+        });
+    }
+
+    $("#sum-ex").textContent = `${PROGRAM.icon} ${PROGRAM.name} · ${fmtTime(duration)}`;
+    $("#sum-headline").textContent = empty ? "Тренировка не начата"
+        : done.length < P.steps.length ? `Выполнено ${done.length} из ${P.steps.length} упражнений`
+        : headlineFor(false, q);
+    $("#sum-score").textContent = total;
+    $("#sum-record").hidden = !isRecord;
+
+    const plank = rs.find((r) => r.def.type === "hold");
+    renderStats([
+        ["Упражнений", `${done.length}/${P.steps.length}`],
+        ["Повторов", rs.reduce((s, r) => s + r.counted, 0)],
+        ["Чистая планка", plank ? `${Math.round(plank.cleanHold)} с` : "—"],
+        ["Техника", `${q}%`],
+    ]);
+
+    // Ошибки по всем упражнениям вместе
+    const all = rs.flatMap((r) => r.errors.map((s) => ({ ...s, def: r.def })))
+        .sort((a, b) => (b.count + b.time) - (a.count + a.time));
+    $("#sum-errors").innerHTML = all.length
+        ? all.slice(0, 4).map((s) => `
+            <li><b>${s.def.icon} ${s.issue.title}<em>${s.def.type === "hold" ? `${Math.round(s.time)} с` : `×${s.count}`}</em></b>
+            <span>Как исправить: ${s.issue.fix}</span></li>`).join("")
+        : `<li class="clean"><b>Ошибок не замечено</b><span>Отличная тренировка — попробуй повторить завтра!</span></li>`;
+
+    $("#sum-bars-label").textContent = "Очки по упражнениям";
+    renderBars(rs.map((r) => ({ score: r.score, label: `${r.def.icon} ${r.score}` })), "Нет результатов");
+
+    show("summary");
+    sfx.finish();
+    const top = all[0];
+    say(empty ? "Тренировка завершена" : `Тренировка окончена! ${total} очков. ${isRecord ? "Новый рекорд! " : ""}${top ? "Главное замечание: " + top.issue.title : "Отличная техника!"}`, "finish", true);
 }
 
 /* =====================================================================
@@ -1131,10 +1353,27 @@ $("#file-input").addEventListener("change", (e) => {
     if (f) start({ file: f });
 });
 $("#btn-retry").addEventListener("click", () => start({ camera: true }));
-$("#btn-prep-back").addEventListener("click", () => { renderMenu(); show("menu"); });
+$("#btn-demo").addEventListener("click", () => start({ url: "demo.mp4", demo: "squat" }));
+$("#btn-minus").addEventListener("click", () => changeTarget(-1));
+$("#btn-plus").addEventListener("click", () => changeTarget(1));
+$("#btn-prep-go").addEventListener("click", () => startCountdown(performance.now()));
+$("#btn-prep-back").addEventListener("click", goMenu);
+$("#btn-rest-next").addEventListener("click", () => { if (app.program) openProgramStep(); });
+$("#btn-rest-stop").addEventListener("click", () => { if (app.program) renderProgramSummary(); });
 $("#btn-stop").addEventListener("click", () => finish("button"));
-$("#btn-again").addEventListener("click", () => openPrepare(app.def));
-$("#btn-menu").addEventListener("click", () => { renderMenu(); show("menu"); });
+$("#btn-again").addEventListener("click", () => (app.lastMode === "program" ? startProgram() : openPrepare(app.def)));
+$("#btn-menu").addEventListener("click", goMenu);
+
+function goMenu() {
+    app.program = null;
+    renderMenu();
+    show("menu");
+}
+
+// Кнопку демо показываем, только если рядом с сайтом лежит demo.mp4
+fetch("demo.mp4", { method: "HEAD" })
+    .then((r) => { if (r.ok) $("#btn-demo").hidden = false; })
+    .catch(() => { /* демо-видео нет */ });
 
 const muteBtn = $("#btn-mute");
 function toggleMute() {
@@ -1147,7 +1386,8 @@ muteBtn.addEventListener("click", toggleMute);
 window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
         if (app.screen === "workout") finish("key");
-        else if (app.screen === "prepare" || app.screen === "countdown") { renderMenu(); show("menu"); }
+        else if (app.screen === "rest" && app.program) renderProgramSummary();
+        else if (app.screen === "prepare" || app.screen === "countdown") goMenu();
     } else if (e.key === "m" || e.key === "M" || e.key === "ь" || e.key === "Ь") {
         toggleMute();
     } else if (e.key === "d" || e.key === "D" || e.key === "в" || e.key === "В") {

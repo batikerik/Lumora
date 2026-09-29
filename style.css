@@ -526,6 +526,46 @@ h3 { font-size: 20px; font-weight: 700; }
     pointer-events: none;
 }
 
+/* ---------- Кнопки старта ---------- */
+.intro-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.intro-actions [hidden] { display: none; }
+
+/* ---------- Карточка «Тренировка» ---------- */
+.card.program {
+    grid-column: 1 / -1;
+    min-height: 0;
+    flex-direction: row;
+    align-items: center;
+    gap: 18px;
+    background: linear-gradient(120deg, rgba(61, 99, 255, .45), rgba(47, 212, 138, .18)), var(--panel);
+    border-color: rgba(125, 154, 255, .45);
+}
+.card.program .program-text { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.card.program .meta { margin-top: 4px; justify-content: flex-start; gap: 16px; }
+
+/* ---------- Выбор цели жестом ---------- */
+.target { display: flex; align-items: center; justify-content: center; gap: 16px; margin: 18px 0 4px; }
+.target[hidden] { display: none; }
+.target .btn { width: 72px; height: 72px; padding: 0; font-size: 32px; border-radius: 18px; }
+.target-value { min-width: 130px; text-align: center; }
+.target-value small { display: block; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.target-value b { font-family: var(--font-display); font-size: 36px; }
+.prep-actions { display: flex; gap: 10px; }
+.prep-actions .btn { flex: 1; }
+
+/* ---------- Отдых между упражнениями ---------- */
+.rest { width: 100%; max-width: 520px; }
+.rest h3 { font-size: 22px; }
+.rest-timer {
+    font-family: var(--font-display);
+    font-size: 96px;
+    font-weight: 800;
+    line-height: 1;
+    margin: 18px 0 6px;
+    color: var(--accent-2);
+    font-variant-numeric: tabular-nums;
+}
+
 /* ---------- Телефон ---------- */
 @media (max-width: 720px) {
     .screen { padding: 64px 14px 16px; }
@@ -533,6 +573,9 @@ h3 { font-size: 20px; font-weight: 700; }
     .cards { grid-template-columns: repeat(2, 1fr); gap: 10px; }
     .card { min-height: 160px; padding: 16px; }
     .card p { display: none; }
+    .card.program { padding: 16px; }
+    .target .btn { width: 60px; height: 60px; }
+    .rest-timer { font-size: 72px; }
     .stats { grid-template-columns: repeat(2, 1fr); }
     .sum-cols { grid-template-columns: 1fr; gap: 0; }
     .meter { right: 10px; }

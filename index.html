@@ -33,7 +33,10 @@
                 <li><b>Режим «ошибка»</b> — видит неточные движения и говорит, как исправить</li>
                 <li><b>Без мыши</b> — выбор ладонью, завершение жестом</li>
             </ul>
-            <button id="btn-start" class="btn primary big">Включить камеру</button>
+            <div class="intro-actions">
+                <button id="btn-start" class="btn primary big">Включить камеру</button>
+                <button id="btn-demo" class="btn ghost big" hidden>▶ Посмотреть пример</button>
+            </div>
             <label class="link-btn">нет камеры? <u>загрузить видео</u>
                 <input type="file" id="file-input" accept="video/*" hidden>
             </label>
@@ -76,9 +79,33 @@
                 <li id="chk-view"></li>
             </ul>
             <div class="prep-bar"><div id="prep-fill"></div></div>
+            <div class="target" id="target-box">
+                <button class="btn" data-gesture id="btn-minus" aria-label="Меньше">−</button>
+                <div class="target-value"><small id="target-label">Цель</small><b id="target-value">10</b></div>
+                <button class="btn" data-gesture id="btn-plus" aria-label="Больше">+</button>
+            </div>
             <p class="label">Что я проверяю</p>
             <ul class="prep-checks" id="prep-checks"></ul>
-            <button class="btn ghost" data-gesture id="btn-prep-back">← Назад</button>
+            <div class="prep-actions">
+                <button class="btn primary" data-gesture id="btn-prep-go">▶ Начать сейчас</button>
+                <button class="btn ghost" data-gesture id="btn-prep-back">← Назад</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- 4б. Отдых между упражнениями в режиме «Тренировка» -->
+    <section class="screen center" data-screen="rest">
+        <div class="panel rest">
+            <p class="eyebrow" id="rest-step"></p>
+            <h2 id="rest-done"></h2>
+            <p class="muted" id="rest-result"></p>
+            <div class="rest-timer" id="rest-timer">10</div>
+            <p class="label">Далее</p>
+            <h3 id="rest-next"></h3>
+            <div class="actions">
+                <button class="btn primary" data-gesture id="btn-rest-next">▶ Дальше</button>
+                <button class="btn ghost" data-gesture id="btn-rest-stop">■ Закончить тренировку</button>
+            </div>
         </div>
     </section>
 
@@ -140,7 +167,7 @@
                     <ul class="errors" id="sum-errors"></ul>
                 </div>
                 <div>
-                    <p class="label">Прогресс (последние подходы)</p>
+                    <p class="label" id="sum-bars-label">Прогресс (последние подходы)</p>
                     <div class="bars" id="sum-bars"></div>
                 </div>
             </div>
