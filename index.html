@@ -33,6 +33,10 @@
                 <li><b>Режим «ошибка»</b> — видит неточные движения и говорит, как исправить</li>
                 <li><b>Без мыши</b> — выбор ладонью, завершение жестом</li>
             </ul>
+            <div class="intro-warning" id="intro-warning" hidden>
+                <span class="err-icon small">📷</span>
+                <div><b id="intro-warning-title"></b><p id="intro-warning-text"></p></div>
+            </div>
             <div class="intro-actions">
                 <button id="btn-start" class="btn primary big">Включить камеру</button>
                 <button id="btn-demo" class="btn ghost big" hidden>▶ Посмотреть пример</button>
@@ -48,13 +52,30 @@
     <section class="screen center" data-screen="loading">
         <div class="loader"></div>
         <p id="loading-text">Загрузка…</p>
+        <div class="loading-slow" id="loading-slow" hidden>
+            <p>Загрузка идёт дольше обычного. Проверь интернет: модель распознавания весит около 10 МБ.</p>
+            <button class="btn ghost small" id="btn-reload">↻ Обновить страницу</button>
+        </div>
     </section>
 
     <section class="screen center" data-screen="error">
-        <div class="panel narrow">
-            <h2>Что-то пошло не так</h2>
-            <p id="error-text"></p>
-            <button class="btn primary" id="btn-retry">Попробовать снова</button>
+        <div class="panel error-panel">
+            <div class="err-icon">📷</div>
+            <h2 id="error-title">Камера не работает</h2>
+            <p class="muted" id="error-text"></p>
+            <ol class="error-steps" id="error-steps"></ol>
+            <label class="camera-select" id="camera-select-box" hidden>
+                <span>Другая камера:</span>
+                <select id="camera-select"></select>
+            </label>
+            <div class="error-actions">
+                <button class="btn primary" id="btn-retry">↻ Попробовать снова</button>
+                <label class="btn ghost">📁 Загрузить видео
+                    <input type="file" id="file-input-2" accept="video/*" hidden>
+                </label>
+                <button class="btn ghost" id="btn-err-demo" hidden>▶ Посмотреть пример</button>
+            </div>
+            <p class="fine">Код ошибки: <span id="error-code">—</span></p>
         </div>
     </section>
 
@@ -177,6 +198,24 @@
             </div>
         </div>
     </section>
+
+    <!-- Подсказка, если камера работает, но человека не видно -->
+    <div class="no-person" id="no-person" hidden>
+        👀 Не вижу тебя в кадре — отойди на 2–3 шага. Кнопки можно нажимать и мышкой.
+    </div>
+
+    <!-- Окно поверх всего: камера перестала работать во время использования -->
+    <div class="cam-alert" id="cam-alert" hidden>
+        <div class="panel cam-alert-panel">
+            <div class="err-icon">📷</div>
+            <h2 id="cam-alert-title">Камера отключилась</h2>
+            <p class="muted" id="cam-alert-text"></p>
+            <div class="error-actions">
+                <button class="btn primary" id="btn-cam-reconnect">↻ Переподключить камеру</button>
+                <button class="btn ghost" id="btn-cam-hide">Скрыть</button>
+            </div>
+        </div>
+    </div>
 
     <div id="cursor">
         <svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="16" class="track"/><circle cx="22" cy="22" r="16" class="prog"/></svg>

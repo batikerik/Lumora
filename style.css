@@ -566,6 +566,118 @@ h3 { font-size: 20px; font-weight: 700; }
     font-variant-numeric: tabular-nums;
 }
 
+/* ---------- Состояние камеры: индикатор ---------- */
+#status::before {
+    content: "";
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 7px;
+    vertical-align: 1px;
+    background: var(--muted);
+}
+#status[data-state="ok"] { color: #c9f5e1; border-color: rgba(47, 212, 138, .4); }
+#status[data-state="ok"]::before { background: var(--good); box-shadow: 0 0 8px var(--good); }
+#status[data-state="warn"] { color: #ffe1a6; border-color: rgba(255, 176, 32, .45); }
+#status[data-state="warn"]::before { background: var(--warn); }
+#status[data-state="bad"] { color: #ffc2c8; border-color: rgba(255, 77, 94, .55); }
+#status[data-state="bad"]::before { background: var(--bad); animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .25; } }
+
+/* ---------- Предупреждение на старте ---------- */
+.intro-warning {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    margin: 0 0 20px;
+    padding: 14px 16px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 176, 32, .5);
+    background: rgba(255, 176, 32, .08);
+    max-width: 620px;
+}
+.intro-warning[hidden] { display: none; }
+.intro-warning b { display: block; }
+.intro-warning p { margin: 4px 0 0; color: var(--muted); font-size: 14px; line-height: 1.45; }
+
+/* ---------- Иконка камеры ---------- */
+.err-icon {
+    width: 64px; height: 64px;
+    margin: 0 auto 14px;
+    border-radius: 20px;
+    display: grid;
+    place-items: center;
+    font-size: 32px;
+    background: rgba(255, 77, 94, .14);
+    border: 1px solid rgba(255, 77, 94, .45);
+    position: relative;
+}
+.err-icon::after {
+    content: "";
+    position: absolute;
+    width: 70%; height: 3px;
+    background: var(--bad);
+    border-radius: 3px;
+    transform: rotate(-45deg);
+}
+.err-icon.small { width: 40px; height: 40px; font-size: 20px; margin: 0; border-radius: 12px; flex: none; }
+
+/* ---------- Экран ошибки ---------- */
+.error-panel { width: 100%; max-width: 560px; text-align: left; }
+.error-panel h2, .error-panel > .muted { text-align: center; }
+.error-steps { margin: 18px 0; padding-left: 22px; display: grid; gap: 8px; line-height: 1.45; }
+.error-steps li::marker { color: var(--accent-2); font-weight: 700; }
+.error-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 8px; }
+.error-actions .btn { cursor: pointer; }
+.camera-select { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; font-size: 14px; color: var(--muted); }
+.camera-select[hidden] { display: none; }
+.camera-select select {
+    flex: 1;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: var(--panel-solid);
+    color: var(--text);
+    font: inherit;
+}
+.error-panel .fine { text-align: center; margin-top: 18px; }
+.loading-slow { max-width: 420px; margin-top: 18px; color: var(--muted); }
+
+/* ---------- Окно «камера отключилась» ---------- */
+.cam-alert {
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background: rgba(7, 8, 12, .72);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+.cam-alert[hidden] { display: none; }
+.cam-alert-panel { max-width: 460px; text-align: center; border-color: rgba(255, 77, 94, .45); }
+
+/* ---------- «Не вижу тебя» ---------- */
+.no-person {
+    position: absolute;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    z-index: 15;
+    width: max-content;
+    max-width: calc(100% - 32px);
+    padding: 10px 16px;
+    border-radius: 999px;
+    background: rgba(255, 176, 32, .16);
+    border: 1px solid rgba(255, 176, 32, .5);
+    color: #ffe1a6;
+    font-size: 14px;
+    text-align: center;
+    pointer-events: none;
+}
+.no-person[hidden] { display: none; }
+
 /* ---------- Телефон ---------- */
 @media (max-width: 720px) {
     .screen { padding: 64px 14px 16px; }
@@ -585,5 +697,6 @@ h3 { font-size: 20px; font-weight: 700; }
     .issue p { font-size: 13px; }
     .finish-hint { font-size: 11px; }
     .link-btn { display: block; margin: 16px 0 0; }
-    #status { display: none; }
+    #status { max-width: 46vw; font-size: 11px; }
+    .no-person { font-size: 12px; border-radius: 14px; }
 }

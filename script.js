@@ -571,6 +571,7 @@ const ctx = canvas.getContext("2d");
 const cursorEl = $("#cursor");
 const cursorProg = cursorEl.querySelector(".prog");
 const debugEl = $("#debug");
+const noPersonEl = $("#no-person");
 
 const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28], [27, 29], [29, 31], [27, 31], [28, 30], [30, 32], [28, 32]];
 const JOINTS = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32];
@@ -737,6 +738,11 @@ const app = {
     program: null,      // активная «Тренировка»: { steps, index, results, start }
     restUntil: 0,
     lastMode: "single", // что повторять по кнопке «Ещё раз»
+    stream: null,       // поток с камеры
+    deviceId: null,     // выбранная камера (если их несколько)
+    camProblem: null,   // "ended" | "dark" | "frozen" — что сейчас не так с камерой
+    camAlertDismissed: null,
+    hasDemo: false,     // лежит ли рядом demo.mp4
 };
 const cursor = new HandCursor(cursorEl);
 
@@ -747,26 +753,253 @@ function show(name) {
     cursor.block(900);
 }
 
-function setStatus(text) { statusEl.textContent = text; }
+// Индикатор в углу: state — "ok" (зелёный), "warn" (жёлтый), "bad" (красный) или "" (серый)
+function setStatus(text, state = "") {
+    if (statusEl.textContent !== text) statusEl.textContent = text;
+    if ((statusEl.dataset.state || "") !== state) statusEl.dataset.state = state;
+}
+
+/* ---------- Ошибки камеры: причина и шаги по исправлению ---------- */
+const STEPS_DENIED = [
+    "Нажми на значок 🔒 или 📷 слева от адреса сайта",
+    "В пункте «Камера» выбери «Разрешить»",
+    "Нажми «Попробовать снова» (или обнови страницу)",
+    "Не помогло — открой Параметры Windows → Конфиденциальность → Камера и разреши доступ браузеру",
+];
+const STEPS_BUSY = [
+    "Закрой программы, которые могут держать камеру: Zoom, Teams, Discord, OBS, Skype, «Камера»",
+    "Закрой другие вкладки, где открыта камера",
+    "Нажми «Попробовать снова»",
+    "Не помогло — переподключи камеру или перезапусти браузер",
+];
+const CAMERA_ERRORS = {
+    NotAllowedError: { title: "Доступ к камере запрещён", text: "Браузер или Windows не разрешили сайту включить камеру.", steps: STEPS_DENIED },
+    SecurityError: { title: "Доступ к камере запрещён", text: "Браузер заблокировал камеру для этой страницы.", steps: STEPS_DENIED },
+    NotFoundError: {
+        title: "Камера не найдена", text: "Компьютер не видит ни одной веб-камеры.",
+        steps: [
+            "Проверь, что камера подключена; USB-камеру переподключи в другой порт",
+            "На ноутбуке проверь шторку на камере и кнопку её отключения (часто Fn + клавиша со значком камеры)",
+            "Нажми «Попробовать снова»",
+            "Камеры нет — загрузи видео с тренировкой",
+        ],
+    },
+    NotReadableError: { title: "Камера занята", text: "Камеру уже использует другая программа или вкладка.", steps: STEPS_BUSY },
+    AbortError: { title: "Камера занята", text: "Камера не смогла запуститься.", steps: STEPS_BUSY },
+    OverconstrainedError: {
+        title: "Камера не поддерживает нужный режим", text: "Выбранная камера не может выдать подходящее изображение.",
+        steps: ["Выбери другую камеру в списке ниже", "Нажми «Попробовать снова»"],
+    },
+    NoMedia: {
+        title: "Камера недоступна на этой странице", text: "Браузер разрешает камеру только на защищённых адресах.",
+        steps: [
+            "Открой сайт по ссылке, которая начинается с https://",
+            "Для запуска на компьютере используй http://localhost (Live Server или python -m http.server)",
+            "Используй свежий Chrome, Edge или Firefox",
+        ],
+    },
+    ModelError: {
+        title: "Не загрузилась модель распознавания", text: "Видео есть, но библиотека распознавания позы не скачалась.",
+        steps: ["Проверь подключение к интернету", "Отключи VPN или блокировщик рекламы для этого сайта", "Обнови страницу"],
+    },
+    DemoError: {
+        title: "Не удалось открыть демо-видео", text: "Файл demo.mp4 не найден или повреждён.",
+        steps: ["Положи файл demo.mp4 рядом с index.html", "Или включи камеру / загрузи своё видео"],
+    },
+};
+
+async function showCameraError(err) {
+    console.error(err);
+    const name = err?.name || "Error";
+    const info = CAMERA_ERRORS[name] || {
+        title: "Что-то пошло не так", text: "Не удалось запустить камеру.",
+        steps: ["Обнови страницу", "Попробуй другой браузер: Chrome или Edge", "Или загрузи видео с тренировкой"],
+    };
+    $("#error-title").textContent = info.title;
+    $("#error-text").textContent = info.text;
+    $("#error-steps").innerHTML = "";
+    for (const s of info.steps) {
+        const li = document.createElement("li");
+        li.textContent = s;
+        $("#error-steps").appendChild(li);
+    }
+    $("#error-code").textContent = `${name}${err?.message ? " — " + err.message : ""}`;
+    $("#btn-err-demo").hidden = !app.hasDemo;
+    setStatus(info.title, "bad");
+    show("error");
+    say(info.title, "cam-error", true);
+
+    // Если камер несколько — даём выбрать другую
+    const box = $("#camera-select-box"), sel = $("#camera-select");
+    box.hidden = true;
+    try {
+        const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput" && d.deviceId);
+        if (cams.length > 1) {
+            sel.innerHTML = "";
+            cams.forEach((d, i) => {
+                const opt = document.createElement("option");
+                opt.value = d.deviceId;
+                opt.textContent = d.label || `Камера ${i + 1}`;
+                sel.appendChild(opt);
+            });
+            if (app.deviceId) sel.value = app.deviceId;
+            box.hidden = false;
+        }
+    } catch { /* список камер недоступен */ }
+}
+
+/* ---------- Подключение камеры ---------- */
+async function openCamera(deviceId) {
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        throw Object.assign(new Error("страница открыта не по https и не на localhost"), { name: "NoMedia" });
+    }
+    const size = { width: { ideal: 1280 }, height: { ideal: 720 } };
+    const constraints = deviceId ? { ...size, deviceId: { exact: deviceId } } : { ...size, facingMode: "user" };
+    try {
+        return await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
+    } catch (e) {
+        // Камера не умеет нужное разрешение — пробуем любые настройки
+        if (e.name === "OverconstrainedError") return await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        throw e;
+    }
+}
+
+function attachStream(stream) {
+    app.stream?.getTracks().forEach((t) => t.stop());
+    app.stream = stream;
+    video.srcObject = stream;
+    resetHealth();
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+    track.addEventListener("ended", () => { if (app.stream === stream) cameraProblem("ended"); });
+    // mute — камера временно перестала слать кадры (шторка, другая программа)
+    track.addEventListener("mute", () => setTimeout(() => { if (app.stream === stream && track.muted) cameraProblem("frozen"); }, 1500));
+    track.addEventListener("unmute", () => { if (app.stream === stream) clearCameraProblem(); });
+}
+
+function stopStream() {
+    app.stream?.getTracks().forEach((t) => t.stop());
+    app.stream = null;
+}
+
+/* ---------- Слежение за камерой во время работы ---------- */
+const CAM_PROBLEMS = {
+    ended: {
+        title: "Камера отключилась",
+        text: "Камера перестала передавать видео: её отключили, выдернули шнур или её забрала другая программа (Zoom, Teams, OBS).",
+        say: "Камера отключилась",
+    },
+    dark: {
+        title: "Камера показывает чёрный экран",
+        text: "Похоже, камера закрыта шторкой, крышкой или пальцем — или в комнате слишком темно. Открой камеру или включи свет.",
+        say: "Камера показывает чёрный экран",
+    },
+    frozen: {
+        title: "Изображение с камеры зависло",
+        text: "Камера перестала присылать новые кадры. Нажми «Переподключить камеру» — обычно это помогает.",
+        say: "Изображение с камеры зависло",
+    },
+};
+const health = { last: 0, frames: 0, lastFrames: -1, lastTime: -1, frozenSince: 0, darkSince: 0, canvas: null, ctx: null };
+
+function resetHealth() {
+    Object.assign(health, { last: performance.now(), lastFrames: -1, lastTime: -1, frozenSince: 0, darkSince: 0 });
+}
+
+// Счётчик реально пришедших кадров (точнее, чем currentTime для живого потока)
+if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
+    const onFrame = () => { health.frames++; video.requestVideoFrameCallback(onFrame); };
+    video.requestVideoFrameCallback(onFrame);
+}
+
+function checkCamera(now) {
+    if (!app.stream || document.hidden || now - health.last < 1000) return;
+    health.last = now;
+    const track = app.stream.getVideoTracks()[0];
+    if (!track || track.readyState === "ended") return cameraProblem("ended");
+
+    // Зависание: за секунду не пришло ни одного нового кадра
+    const moved = "requestVideoFrameCallback" in video ? health.frames !== health.lastFrames : video.currentTime !== health.lastTime;
+    health.lastFrames = health.frames;
+    health.lastTime = video.currentTime;
+    if (moved) health.frozenSince = 0; else health.frozenSince ||= now;
+
+    // Чёрный экран: средняя яркость уменьшенного кадра почти ноль
+    let dark = false;
+    if (video.readyState >= 2) {
+        health.canvas ||= Object.assign(document.createElement("canvas"), { width: 32, height: 18 });
+        health.ctx ||= health.canvas.getContext("2d", { willReadFrequently: true });
+        health.ctx.drawImage(video, 0, 0, 32, 18);
+        const d = health.ctx.getImageData(0, 0, 32, 18).data;
+        let sum = 0;
+        for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+        dark = sum / (d.length / 4) / 3 < 12;
+    }
+    if (dark) health.darkSince ||= now; else health.darkSince = 0;
+
+    if (health.frozenSince && now - health.frozenSince > 4000) cameraProblem("frozen");
+    else if (health.darkSince && now - health.darkSince > 3000) cameraProblem("dark");
+    else if (app.camProblem && app.camProblem !== "ended") clearCameraProblem(); // картинка вернулась сама
+}
+
+function cameraProblem(kind) {
+    if (app.camProblem === kind) return;
+    app.camProblem = kind;
+    const p = CAM_PROBLEMS[kind];
+    setStatus(p.title, "bad");
+    if (app.camAlertDismissed === kind) return;
+    $("#cam-alert-title").textContent = p.title;
+    $("#cam-alert-text").textContent = p.text;
+    $("#cam-alert").hidden = false;
+    sfx.bad();
+    say(p.say, "cam-" + kind, true);
+}
+
+function clearCameraProblem() {
+    if (!app.camProblem) return;
+    app.camProblem = null;
+    app.camAlertDismissed = null;
+    $("#cam-alert").hidden = true;
+    setStatus("Камера снова работает", "ok");
+}
+
+async function reconnectCamera() {
+    const btn = $("#btn-cam-reconnect");
+    btn.disabled = true;
+    btn.textContent = "Подключаю…";
+    try {
+        attachStream(await openCamera(app.deviceId));
+        await video.play().catch((e) => { if (e.name !== "AbortError") throw e; });
+        app.camProblem = "ended"; // чтобы clearCameraProblem точно сработал
+        clearCameraProblem();
+    } catch (err) {
+        $("#cam-alert").hidden = true;
+        app.camProblem = null;
+        app.program = null;
+        showCameraError(err);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "↻ Переподключить камеру";
+    }
+}
 
 // ---------- Старт камеры и модели ----------
 async function start(src) {
     unlockAudio();
     show("loading");
-    $("#loading-text").textContent = src.file ? "Открываю видео…" : "Включаю камеру… Разреши доступ в браузере";
+    $("#loading-slow").hidden = true;
+    const slowTimer = setTimeout(() => { $("#loading-slow").hidden = false; }, 25000);
+    $("#loading-text").textContent = src.file || src.url ? "Открываю видео…" : "Включаю камеру… Разреши доступ в браузере";
     try {
         if (src.file || src.url) {
+            stopStream();
             video.srcObject = null;
             video.src = src.url || URL.createObjectURL(src.file);
             video.loop = true;
             app.mirror = false;
         } else {
-            if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("no-media"), { name: "NoMedia" });
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
-                audio: false,
-            });
-            video.srcObject = stream;
+            video.removeAttribute("src");
+            attachStream(await openCamera(app.deviceId));
             app.mirror = true;
         }
         video.classList.toggle("mirror", app.mirror);
@@ -774,11 +1007,16 @@ async function start(src) {
         await video.play().catch((e) => { if (e.name !== "AbortError") throw e; });
         video.classList.add("live");
         updateFit();
-        setStatus(src.url ? "Демо-видео" : src.file ? "Видео из файла" : "Камера подключена");
+        setStatus(src.url ? "Демо-видео" : src.file ? "Видео из файла" : "Камера подключена", "ok");
+        $("#intro-warning").hidden = true;
 
         if (!app.detector) {
             $("#loading-text").textContent = "Загружаю модель распознавания позы…";
-            app.detector = await createDetector(MODEL_VARIANT);
+            try {
+                app.detector = await createDetector(MODEL_VARIANT);
+            } catch (e) {
+                throw Object.assign(new Error(e?.message || String(e)), { name: "ModelError" });
+            }
         }
         if (!app.started) { app.started = true; requestAnimationFrame(loop); }
         renderMenu();
@@ -790,22 +1028,10 @@ async function start(src) {
             say("Выбери упражнение. Наведи ладонь на карточку", "menu", true);
         }
     } catch (err) {
-        console.error(err);
-        if (src.url) {
-            $("#error-text").textContent = `Не удалось открыть демо-видео ${src.url}. Положи файл рядом с index.html.`;
-            setStatus("Ошибка");
-            show("error");
-            return;
-        }
-        const msg = {
-            NotAllowedError: "Доступ к камере запрещён. Разреши его в адресной строке браузера (значок камеры) и попробуй снова.",
-            NotFoundError: "Камера не найдена. Подключи камеру или загрузи видео с тренировкой.",
-            NotReadableError: "Камера занята другим приложением (Zoom, Teams…). Закрой его и попробуй снова.",
-            NoMedia: "Браузер не даёт доступ к камере. Открой сайт по https или через localhost.",
-        }[err.name] || `Не удалось запустить: ${err.message || err}. Проверь интернет — модель загружается из сети.`;
-        $("#error-text").textContent = msg;
-        setStatus("Ошибка");
-        show("error");
+        if (src.url && err.name !== "ModelError") err = Object.assign(new Error(err?.message || ""), { name: "DemoError" });
+        showCameraError(err);
+    } finally {
+        clearTimeout(slowTimer);
     }
 }
 
@@ -850,9 +1076,18 @@ function loop() {
             f.value = Math.round((f.frames * 1000) / (now - f.since));
             f.frames = 0;
             f.since = now;
-            setStatus(`${app.mirror ? "Камера" : "Видео"} · ${f.value} fps · ${app.body ? "человек в кадре" : "никого не вижу"}`);
+            if (!app.camProblem) {
+                setStatus(`${app.mirror ? "Камера" : "Видео"} · ${f.value} fps · ${app.body ? "ты в кадре" : "не вижу тебя"}`, app.body ? "ok" : "warn");
+            }
         }
     }
+
+    checkCamera(now);
+
+    // «Не вижу тебя» на экранах с кнопками: камера работает, а человека нет дольше 3 с
+    const noPerson = ["menu", "prepare", "summary", "rest"].includes(app.screen)
+        && !app.camProblem && !app.body && now - app.lastSeen > 3000;
+    if (noPersonEl.hidden === noPerson) noPersonEl.hidden = !noPerson;
 
     let bad = new Set(), guides = [];
     switch (app.screen) {
@@ -1354,6 +1589,18 @@ $("#file-input").addEventListener("change", (e) => {
 });
 $("#btn-retry").addEventListener("click", () => start({ camera: true }));
 $("#btn-demo").addEventListener("click", () => start({ url: "demo.mp4", demo: "squat" }));
+$("#btn-err-demo").addEventListener("click", () => start({ url: "demo.mp4", demo: "squat" }));
+$("#file-input-2").addEventListener("change", (e) => {
+    const f = e.target.files[0];
+    if (f) start({ file: f });
+});
+$("#camera-select").addEventListener("change", (e) => { app.deviceId = e.target.value || null; });
+$("#btn-reload").addEventListener("click", () => location.reload());
+$("#btn-cam-reconnect").addEventListener("click", reconnectCamera);
+$("#btn-cam-hide").addEventListener("click", () => {
+    app.camAlertDismissed = app.camProblem; // не показывать снова, пока проблема та же
+    $("#cam-alert").hidden = true;
+});
 $("#btn-minus").addEventListener("click", () => changeTarget(-1));
 $("#btn-plus").addEventListener("click", () => changeTarget(1));
 $("#btn-prep-go").addEventListener("click", () => startCountdown(performance.now()));
@@ -1372,7 +1619,7 @@ function goMenu() {
 
 // Кнопку демо показываем, только если рядом с сайтом лежит demo.mp4
 fetch("demo.mp4", { method: "HEAD" })
-    .then((r) => { if (r.ok) $("#btn-demo").hidden = false; })
+    .then((r) => { if (r.ok) { app.hasDemo = true; $("#btn-demo").hidden = false; } })
     .catch(() => { /* демо-видео нет */ });
 
 const muteBtn = $("#btn-mute");
@@ -1402,9 +1649,37 @@ if ("speechSynthesis" in window) speechSynthesis.getVoices(); // прогрев�
 
 // Скрипт загрузился — кнопки работают
 window.__formaReady = true;
-setStatus("Нажми «Включить камеру»");
+setStatus("Камера выключена — нажми «Включить камеру»");
 
-// Если доступ к камере уже разрешён раньше — включаем её сразу, без кнопки
-navigator.permissions?.query({ name: "camera" })
-    .then((p) => { if (p.state === "granted" && app.screen === "intro") start({ camera: true }); })
-    .catch(() => { /* браузер не поддерживает проверку разрешений */ });
+// Предупреждение на стартовом экране — ещё до нажатия кнопки
+function introWarning(title, text) {
+    $("#intro-warning-title").textContent = title;
+    $("#intro-warning-text").textContent = text;
+    $("#intro-warning").hidden = !title;
+    if (title) setStatus(title, "bad");
+}
+if (!window.isSecureContext) {
+    introWarning("Камера недоступна на этой странице",
+        "Браузер разрешает камеру только по https:// или на localhost. Открой сайт по ссылке с https или через Live Server.");
+} else if (!navigator.mediaDevices?.getUserMedia) {
+    introWarning("Браузер не поддерживает камеру", "Открой сайт в свежем Chrome, Edge или Firefox.");
+} else {
+    navigator.permissions?.query({ name: "camera" })
+        .then((p) => {
+            const update = () => {
+                if (app.screen !== "intro") return;
+                if (p.state === "denied") {
+                    introWarning("Доступ к камере заблокирован",
+                        "Нажми на значок 🔒 слева от адреса сайта → «Камера» → «Разрешить», затем обнови страницу.");
+                } else {
+                    introWarning("", "");
+                    setStatus("Камера выключена — нажми «Включить камеру»");
+                }
+            };
+            update();
+            p.onchange = update;
+            // Если доступ к камере уже разрешён раньше — включаем её сразу, без кнопки
+            if (p.state === "granted" && app.screen === "intro") start({ camera: true });
+        })
+        .catch(() => { /* браузер не поддерживает проверку разрешений */ });
+}
