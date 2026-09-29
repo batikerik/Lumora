@@ -141,6 +141,13 @@ const ISSUES = {
     plank_sag: { title: "Таз проваливается вниз", fix: "Подкрути таз, напряги пресс и ягодицы", say: "Подними таз, напряги пресс" },
     plank_knees: { title: "Колени согнуты", fix: "Выпрями ноги и держи упор на носках", say: "Выпрями ноги" },
     plank_head: { title: "Голова опущена", fix: "Смотри в пол чуть впереди рук, шея продолжает линию спины", say: "Голову ровнее" },
+
+    pushup_get_down: { kind: "info", prio: 2, title: "Прими упор лёжа", fix: "Ладони под плечами, руки прямые, тело прямое — я начну считать сам", say: "Принимай упор лёжа" },
+    pushup_shallow: { title: "Неполное отжимание — не засчитано", fix: "Опускайся ниже: локти до 90°, грудь почти касается пола", say: "Опускайся ниже, локти до девяноста градусов" },
+    pushup_sag: { title: "Таз проваливается вниз", fix: "Напряги пресс и ягодицы — тело должно двигаться одной прямой доской", say: "Не проваливай таз" },
+    pushup_pike: { title: "Таз задран вверх", fix: "Опусти таз: плечи, таз и пятки на одной линии", say: "Опусти таз" },
+    pushup_knees: { title: "Колени согнуты", fix: "Выпрями ноги и держи упор на носках", say: "Выпрями ноги" },
+    pushup_hands: { title: "Руки слишком далеко вперёд", fix: "Ставь ладони прямо под плечами — так нагрузка идёт в грудь, а не в плечевой сустав", say: "Ладони под плечи" },
 };
 
 function issue(code, extra = {}) {
@@ -406,6 +413,69 @@ function createPlank() {
     };
 }
 
+// ---------- Отжимания (боком) ----------
+function createPushup() {
+    let view = "side", phase = "up", minElbow = 180, maxOff = 0;
+    return {
+        update(b) {
+            view = trackView(view, b);
+            const S = b.side(b.bestSide());
+            const tl = b.torsoLen();
+            const issues = [];
+            let rep = null;
+            const tilt = inclineFromHorizontal(S.shoulder, S.ankle);
+            const supported = S.wrist.y > S.shoulder.y - 0.03; // упор на руки: кисти ниже плеч (с запасом для нижней точки)
+            const inPosition = view === "side" && tilt < 40 && supported;
+            const elbow = angle(S.shoulder, S.elbow, S.wrist); // 180° — руки прямые, 90° — нижняя точка
+
+            if (!inPosition) {
+                issues.push(view === "front" && tilt < 40 ? issue("turn_side") : issue("pushup_get_down"));
+                phase = "up";
+                return { issues, progress: 0, guides: [], metric: { label: "Наклон", value: Math.round(tilt) + "°" }, debug: { view, tilt: Math.round(tilt) } };
+            }
+
+            // Линия тела: насколько таз выше (+) или ниже (−) прямой «плечо — лодыжка»
+            const dx = S.ankle.x - S.shoulder.x;
+            const t = dx ? (S.hip.x - S.shoulder.x) / dx : 0.5;
+            const lineY = S.shoulder.y + t * (S.ankle.y - S.shoulder.y);
+            const off = (lineY - S.hip.y) / tl;
+
+            if (off > 0.15) issues.push(issue("pushup_pike", { joints: [S.idx.hip] }));
+            else if (off < -0.12) issues.push(issue("pushup_sag", { joints: [S.idx.hip] }));
+            if (angle(S.hip, S.knee, S.ankle) < 150) issues.push(issue("pushup_knees", { joints: [S.idx.knee] }));
+            if ((S.ear.y - S.shoulder.y) / tl > 0.35) issues.push(issue("plank_head", { joints: [S.idx.ear] }));
+            // В верхней точке ладони должны быть примерно под плечами
+            if (elbow > 150 && Math.abs(S.wrist.x - S.shoulder.x) > 0.35 * tl)
+                issues.push(issue("pushup_hands", { joints: [S.idx.wrist, S.idx.shoulder] }));
+
+            // Фазы: руки прямые → согнулись → снова прямые = попытка
+            if (phase === "up") {
+                if (elbow < 135) { phase = "down"; minElbow = elbow; maxOff = Math.abs(off); }
+            } else {
+                minElbow = Math.min(minElbow, elbow);
+                maxOff = Math.max(maxOff, Math.abs(off));
+                if (elbow > 145) {
+                    phase = "up";
+                    // Оценка: глубина (90° и ниже — 100%) минус отклонение линии тела
+                    const quality = clamp((160 - minElbow) / 70) * 100 - Math.max(0, maxOff - 0.08) * 200;
+                    rep = minElbow <= 100
+                        ? { counted: true, errors: [], quality }
+                        : { counted: false, errors: [issue("pushup_shallow", { joints: [S.idx.elbow] })], quality };
+                }
+            }
+
+            const r = b.raw;
+            return {
+                issues, rep,
+                progress: clamp((170 - elbow) / 80),
+                guides: [{ type: "seg", a: r[S.idx.shoulder], b: r[S.idx.ankle], ok: off <= 0.15 && off >= -0.12, label: "линия тела" }],
+                metric: { label: "Локти", value: Math.round(elbow) + "°" },
+                debug: { view, tilt: Math.round(tilt), elbow: Math.round(elbow), off: off.toFixed(2), phase },
+            };
+        },
+    };
+}
+
 const EXERCISES = [
     {
         id: "squat", name: "Приседания", icon: "🏋️", type: "reps", target: 10, view: "any", need: "full",
@@ -434,6 +504,13 @@ const EXERCISES = [
         setup: "Повернись боком к камере и расположись так, чтобы в кадре было тело целиком — и стоя, и в упоре.",
         checks: ["Плечи, таз и пятки на одной линии", "Таз не задран и не провисает", "Прямые ноги", "Шея продолжает линию спины"],
         create: createPlank,
+    },
+    {
+        id: "pushup", name: "Отжимания", icon: "💪", type: "reps", target: 10, view: "side", need: "full",
+        desc: "Считаю повторы по углу в локтях и слежу за линией тела.",
+        setup: "Повернись боком к камере и расположись так, чтобы в кадре было тело целиком — и стоя, и в упоре лёжа.",
+        checks: ["Локти сгибаются до 90°", "Руки полностью выпрямляются вверху", "Таз не провисает и не задран", "Ладони под плечами"],
+        create: createPushup,
     },
 ];
 
