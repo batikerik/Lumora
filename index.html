@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>FORMA — фитнес-тренер через веб-камеру</title>
+    <meta name="description" content="Считает повторы, следит за техникой и подсказывает, как исправить ошибки. Управление жестами через веб-камеру.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%233d63ff'/><text x='50' y='70' font-size='60' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'>F</text></svg>">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body data-screen="intro">
+<main id="stage">
+    <video id="camera" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div class="shade"></div>
+
+    <header class="topbar">
+        <div class="logo">FORMA<span>.</span></div>
+        <p id="status">Нажми «Включить камеру»</p>
+        <button id="btn-mute" class="icon-btn" title="Звук и голос (M)" aria-label="Звук">🔊</button>
+    </header>
+
+    <!-- 1. Старт -->
+    <section class="screen intro" data-screen="intro">
+        <div class="intro-card">
+            <p class="eyebrow">AI-тренер · камера вместо джойстика</p>
+            <h1>Тренируйся перед камерой — <em>FORMA</em> считает повторы и&nbsp;поправляет технику</h1>
+            <ul class="intro-points">
+                <li><b>4 упражнения</b> — приседания, джампинг-джек, подъём рук, планка</li>
+                <li><b>Режим «ошибка»</b> — видит неточные движения и говорит, как исправить</li>
+                <li><b>Без мыши</b> — выбор ладонью, завершение жестом</li>
+            </ul>
+            <button id="btn-start" class="btn primary big">Включить камеру</button>
+            <label class="link-btn">нет камеры? <u>загрузить видео</u>
+                <input type="file" id="file-input" accept="video/*" hidden>
+            </label>
+            <p class="fine">Видео обрабатывается прямо в браузере и никуда не отправляется.</p>
+        </div>
+    </section>
+
+    <!-- 2. Загрузка / ошибка -->
+    <section class="screen center" data-screen="loading">
+        <div class="loader"></div>
+        <p id="loading-text">Загрузка…</p>
+    </section>
+
+    <section class="screen center" data-screen="error">
+        <div class="panel narrow">
+            <h2>Что-то пошло не так</h2>
+            <p id="error-text"></p>
+            <button class="btn primary" id="btn-retry">Попробовать снова</button>
+        </div>
+    </section>
+
+    <!-- 3. Меню -->
+    <section class="screen menu" data-screen="menu">
+        <div class="menu-head">
+            <h2>Выбери упражнение</h2>
+            <p>✋ Наведи ладонь на карточку и задержи на секунду — или просто кликни</p>
+        </div>
+        <div class="cards" id="cards"></div>
+        <p class="menu-foot" id="menu-stats"></p>
+    </section>
+
+    <!-- 4. Подготовка -->
+    <section class="screen prepare" data-screen="prepare">
+        <div class="panel prep">
+            <p class="eyebrow" id="prep-eyebrow"></p>
+            <h2 id="prep-title"></h2>
+            <p class="muted" id="prep-setup"></p>
+            <ul class="checklist">
+                <li id="chk-frame">Всё тело в кадре</li>
+                <li id="chk-view"></li>
+            </ul>
+            <div class="prep-bar"><div id="prep-fill"></div></div>
+            <p class="label">Что я проверяю</p>
+            <ul class="prep-checks" id="prep-checks"></ul>
+            <button class="btn ghost" data-gesture id="btn-prep-back">← Назад</button>
+        </div>
+    </section>
+
+    <!-- 5. Отсчёт -->
+    <section class="screen center" data-screen="countdown">
+        <div class="count" id="count">3</div>
+        <p class="count-sub">Приготовься</p>
+    </section>
+
+    <!-- 6. Тренировка -->
+    <section class="screen workout" data-screen="workout">
+        <div class="hud-top">
+            <div class="hud-ex">
+                <p class="eyebrow" id="hud-type"></p>
+                <h3 id="hud-name"></h3>
+                <p class="hud-time" id="hud-time">0:00</p>
+            </div>
+            <div class="hud-counter">
+                <div><span id="hud-count">0</span><small id="hud-target">/10</small></div>
+                <p id="hud-sub"></p>
+            </div>
+        </div>
+
+        <div class="meter">
+            <div class="meter-track"><div class="meter-fill" id="meter-fill"></div></div>
+            <span id="meter-label"></span>
+            <b id="meter-value"></b>
+        </div>
+
+        <div class="rep-pop" id="rep-pop"></div>
+
+        <div class="issue ok" id="issue">
+            <div class="issue-icon" id="issue-icon">✓</div>
+            <div>
+                <b id="issue-title">Техника в норме</b>
+                <p id="issue-fix">Продолжай в том же темпе</p>
+            </div>
+        </div>
+
+        <div class="hud-bottom">
+            <div class="finish-hint" id="finish-hint"><span class="ring"></span>Скрести руки над головой — закончить</div>
+            <button class="btn ghost small" id="btn-stop">Стоп (Esc)</button>
+        </div>
+    </section>
+
+    <!-- 7. Итоги -->
+    <section class="screen summary" data-screen="summary">
+        <div class="panel sum">
+            <p class="eyebrow" id="sum-ex"></p>
+            <div class="sum-head">
+                <h2 id="sum-headline"></h2>
+                <div class="score"><span id="sum-score">0</span><small>очков</small></div>
+            </div>
+            <div class="badge" id="sum-record" hidden>🏆 Новый рекорд!</div>
+            <div class="stats" id="sum-stats"></div>
+            <div class="sum-cols">
+                <div>
+                    <p class="label">Над чем поработать</p>
+                    <ul class="errors" id="sum-errors"></ul>
+                </div>
+                <div>
+                    <p class="label">Прогресс (последние подходы)</p>
+                    <div class="bars" id="sum-bars"></div>
+                </div>
+            </div>
+            <div class="actions">
+                <button class="btn primary" data-gesture id="btn-again">↻ Ещё раз</button>
+                <button class="btn ghost" data-gesture id="btn-menu">☰ В меню</button>
+            </div>
+        </div>
+    </section>
+
+    <div id="cursor">
+        <svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="16" class="track"/><circle cx="22" cy="22" r="16" class="prog"/></svg>
+    </div>
+    <pre id="debug" hidden></pre>
+</main>
+
+<script type="module" src="script.js"></script>
+<script>
+    // Если script.js или библиотека MediaPipe не загрузились — кнопка не будет работать. Сообщаем об этом.
+    setTimeout(function () {
+        if (window.__formaReady) return;
+        var s = document.getElementById("status");
+        s.textContent = "Скрипт не загрузился — открой консоль (F12)";
+        s.style.color = "#ff4d5e";
+        document.getElementById("btn-start").textContent = "Ошибка загрузки — обнови страницу";
+    }, 15000);
+</script>
+</body>
+</html>
